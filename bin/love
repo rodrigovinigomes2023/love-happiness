@@ -1,0 +1,145 @@
+#!/bin/sh
+# love / happiness: mostra uma frase no idioma do sistema.
+# O mesmo script atende os dois comandos; o nome com que foi chamado decide o tema.
+set -eu
+
+VERSAO="1.0.0"
+
+tema=$(basename "$0")
+case "$tema" in
+  love) nome_tema="amor" ;;
+  happiness) nome_tema="felicidade" ;;
+  *) tema=love; nome_tema="amor" ;;
+esac
+
+# Pasta real do script, mesmo quando chamado por um link.
+script=$0
+if command -v readlink >/dev/null 2>&1 && real=$(readlink -f "$0" 2>/dev/null); then
+  script=$real
+fi
+aqui=$(dirname "$script")
+
+# Onde estão as frases: variável de ambiente, ao lado do próprio script
+# (instalação com PREFIX ou repositório), instalação do usuário e do sistema.
+achar_dados() {
+  usuario=""
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    usuario="$XDG_DATA_HOME/love-happiness"
+  elif [ -n "${HOME:-}" ]; then
+    usuario="$HOME/.local/share/love-happiness"
+  fi
+  for d in \
+    "${LOVE_HAPPINESS_DATA:-}" \
+    "$aqui/../share/love-happiness" \
+    "$aqui/../data" \
+    "$usuario" \
+    /usr/local/share/love-happiness \
+    /usr/share/love-happiness; do
+    if [ -n "$d" ] && [ -d "$d/$tema" ]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ajuda() {
+  cat <<EOF
+uso: $tema [-l IDIOMA] [--idiomas] [-h] [-v]
+
+Mostra uma frase sobre $nome_tema no idioma do sistema (LC_ALL, LC_MESSAGES
+ou LANG; depois a lista LANGUAGE como reserva). Sem frases no seu idioma,
+usa inglês.
+
+  -l, --lang IDIOMA   força um idioma (ex.: pt, fr, ja)
+      --idiomas       lista os idiomas disponíveis (também --languages)
+  -h, --help          mostra esta ajuda
+  -v, --version       mostra a versão
+EOF
+}
+
+forcado=""
+listar=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -l|--lang)
+      [ $# -ge 2 ] || { echo "$tema: falta o idioma depois de $1" >&2; exit 2; }
+      forcado=$2; shift 2 ;;
+    --lang=*) forcado=${1#--lang=}; shift ;;
+    --idiomas|--languages) listar=1; shift ;;
+    -h|--help) ajuda; exit 0 ;;
+    -v|--version) echo "$tema $VERSAO"; exit 0 ;;
+    *) echo "$tema: opção desconhecida: $1 (veja $tema --help)" >&2; exit 2 ;;
+  esac
+done
+
+dados=$(achar_dados) || { echo "$tema: não achei a pasta de frases (rode o install.sh)" >&2; exit 1; }
+
+if [ "$listar" = 1 ]; then
+  for f in "$dados/$tema"/*.txt; do
+    [ -e "$f" ] || continue
+    basename "$f" .txt
+  done
+  exit 0
+fi
+
+# Devolve o arquivo de um idioma, se existir. De "pt_BR.UTF-8" tenta "pt_BR"
+# e depois "pt". Só aceita letras e sublinhado: nada de "../" virando caminho.
+arquivo_de() {
+  c=${1%%.*}
+  c=${c%%@*}
+  case "$c" in ''|C|POSIX) return 1 ;; esac
+  for t in "$c" "${c%%_*}"; do
+    case "$t" in *[!A-Za-z_]*) continue ;; esac
+    if [ -f "$dados/$tema/$t.txt" ]; then
+      printf '%s\n' "$dados/$tema/$t.txt"
+      return 0
+    fi
+  done
+  return 1
+}
+
+arquivo=""
+if [ -n "$forcado" ]; then
+  arquivo=$(arquivo_de "$forcado") ||
+    echo "$tema: não tenho frases em \"$forcado\" (veja $tema --idiomas)" >&2
+fi
+
+# Idioma do sistema: primeiro o locale (LC_ALL, LC_MESSAGES ou LANG, o
+# primeiro que estiver preenchido); se não houver frases nele, a lista de
+# reserva LANGUAGE (separada por ":"). Com locale C/POSIX, fica em inglês.
+if [ -z "$arquivo" ]; then
+  loc=${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}
+  case "$loc" in
+    C|C.*|POSIX) lista="" ;;
+    *) lista="$loc:${LANGUAGE:-}" ;;
+  esac
+  # separa só por ":" e sem expandir * ou ?
+  set -f
+  ifs_antigo=$IFS
+  IFS=:
+  for c in $lista; do
+    if arquivo=$(arquivo_de "$c"); then break; fi
+    arquivo=""
+  done
+  IFS=$ifs_antigo
+  set +f
+fi
+[ -n "$arquivo" ] || arquivo="$dados/$tema/en.txt"
+
+# Uma linha não vazia, sorteada.
+if command -v shuf >/dev/null 2>&1; then
+  frase=$(grep -v '^[[:space:]]*$' "$arquivo" | shuf -n 1) || true
+else
+  frase=$(grep -v '^[[:space:]]*$' "$arquivo" |
+    awk -v s="$(date +%s)$$" 'BEGIN{srand(s)} {l[NR]=$0} END{if(NR) print l[int(rand()*NR)+1]}') || true
+fi
+[ -n "$frase" ] || { echo "$tema: nenhuma frase em $arquivo" >&2; exit 1; }
+
+if [ "$tema" = love ]; then icone="❤"; cor="31"; else icone="☀"; cor="33"; fi
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  printf '\033[%sm%s\033[0m  %s\n' "$cor" "$icone" "$frase"
+else
+  printf '%s  %s\n' "$icone" "$frase"
+fi
